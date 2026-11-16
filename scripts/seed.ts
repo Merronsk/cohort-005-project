@@ -2014,6 +2014,85 @@ This course is still in draft while the cluster examples are rewritten against t
     });
   });
 
+  // ─── Reply threads ───
+  // Threads with several Participants, so both Reply wordings show in the bell
+  // (see Reply Notifications below). Covers a Platform Admin's Reply, a Comment
+  // author who also replied, a deleted Reply and a Lapsed Participant.
+  //
+  // Tess is the Lapsed Student: she took part while enrolled on course 1 and
+  // still has progress there, but no longer has an Enrollment, so later Replies
+  // skip her.
+  const [tess] = db
+    .insert(schema.users)
+    .values({
+      name: "Tess Walker",
+      email: "tess.walker@student.dev",
+      role: UserRole.Student,
+      avatarUrl: "https://api.dicebear.com/9.x/avataaars/svg?seed=tess",
+      createdAt: daysAgo(60),
+    })
+    .returning()
+    .all();
+  db.insert(schema.lessonProgress)
+    .values(
+      [0, 1, 2, 3, 4, 5].map((i) => ({
+        userId: tess.id,
+        lessonId: course1LessonIds[i],
+        status: LessonProgressStatus.Completed,
+        completedAt: daysAgo(40 - i),
+      }))
+    )
+    .run();
+
+  // Busy thread on Sarah's course: Emma asks; James, Alex (Platform Admin),
+  // Tess (now Lapsed), Olivia (Reply later deleted), Emma again and Sarah reply.
+  const replyThreadA = comment({
+    lessonId: course1LessonIds[5],
+    userId: students[0].id,
+    body: "Why does narrowing with `typeof` stop working once I move the check into a helper function?",
+    createdAt: daysAgo(3),
+  });
+  const replyA: [number, string, string, string?][] = [
+    [students[1].id, "Same here. I think the helper needs a return type of some kind?", hoursAgo(60)],
+    [admin.id, "Pinned the lesson's errata for this — the fix is a type predicate (`x is string`).", hoursAgo(50)],
+    [tess.id, "I hit this last month. The predicate is the answer.", hoursAgo(40)],
+    [students[2].id, "Wrong thread, ignore me.", hoursAgo(30), hoursAgo(29)],
+    [students[0].id, "Tried `x is string` and it works, but only if the function returns a boolean?", hoursAgo(20)],
+    [instructor1.id, "Right — a type predicate must return a boolean. TypeScript trusts it, so keep the check honest.", hoursAgo(5)],
+  ];
+  for (const [userId, body, createdAt, deletedAt] of replyA) {
+    comment({
+      lessonId: course1LessonIds[5],
+      userId,
+      parentId: replyThreadA.id,
+      body,
+      createdAt,
+      deletedAt,
+    });
+  }
+
+  // Olivia asks; Sarah answers; Sophia joins; Sarah follows up.
+  const replyThreadB = comment({
+    lessonId: course1LessonIds[9],
+    userId: students[2].id,
+    body: "When should I reach for overloads instead of a union parameter?",
+    createdAt: daysAgo(2),
+  });
+  const replyB: [number, string, string][] = [
+    [instructor1.id, "Reach for overloads when the return type depends on which input you got.", hoursAgo(30)],
+    [students[4].id, "Does that mean overloads are mostly for library code?", hoursAgo(12)],
+    [instructor1.id, "Mostly, yes. In app code a union and a narrow is usually clearer.", hoursAgo(3)],
+  ];
+  for (const [userId, body, createdAt] of replyB) {
+    comment({
+      lessonId: course1LessonIds[9],
+      userId,
+      parentId: replyThreadB.id,
+      body,
+      createdAt,
+    });
+  }
+
   console.log(
     `Created ${countRows(schema.comments)} lesson comments across ${countRows(schema.comments, isNull(schema.comments.parentId))} threads.`
   );
@@ -2053,6 +2132,83 @@ This course is still in draft while the cluster examples are rewritten against t
         readAt: isOld ? c.createdAt : null,
       })
       .run();
+  }
+
+  // Reply Notifications, following postComment's rules for each Reply in the
+  // order posted: the thread's Participants (the Comment's author and authors
+  // of Replies not deleted by then), minus the Reply's author and Platform
+  // Admins, kept only if they can view the course now (the owning Instructor or
+  // an Enrollment, so Lapsed Tess is skipped). The Comment's author gets
+  // reply_to_your_comment; everyone else reply_in_your_thread.
+  const enrolledOn = new Set(
+    db
+      .select()
+      .from(schema.enrollments)
+      .all()
+      .map((e) => `${e.userId}:${e.courseId}`)
+  );
+  const roleOf = new Map(
+    db
+      .select({ id: schema.users.id, role: schema.users.role })
+      .from(schema.users)
+      .all()
+      .map((u) => [u.id, u.role])
+  );
+  const authorOf = new Map(
+    db
+      .select({ id: schema.comments.id, userId: schema.comments.userId })
+      .from(schema.comments)
+      .all()
+      .map((c) => [c.id, c.userId])
+  );
+  const seededReplies = db
+    .select({
+      reply: schema.comments,
+      courseId: schema.courses.id,
+      instructorId: schema.courses.instructorId,
+    })
+    .from(schema.comments)
+    .innerJoin(schema.lessons, eq(schema.lessons.id, schema.comments.lessonId))
+    .innerJoin(schema.modules, eq(schema.modules.id, schema.lessons.moduleId))
+    .innerJoin(schema.courses, eq(schema.courses.id, schema.modules.courseId))
+    .where(isNotNull(schema.comments.parentId))
+    .all();
+
+  for (const { reply, courseId, instructorId } of seededReplies) {
+    const reasons = new Map<number, NotificationReason>();
+    for (const { reply: earlier } of seededReplies) {
+      const takenPart =
+        earlier.parentId === reply.parentId &&
+        earlier.id !== reply.id &&
+        earlier.createdAt <= reply.createdAt &&
+        (earlier.deletedAt === null || earlier.deletedAt > reply.createdAt);
+      if (takenPart) {
+        reasons.set(earlier.userId, NotificationReason.ReplyInYourThread);
+      }
+    }
+    reasons.set(
+      authorOf.get(reply.parentId!)!,
+      NotificationReason.ReplyToYourComment
+    );
+    reasons.delete(reply.userId);
+
+    const isOld =
+      new Date(reply.createdAt).getTime() < Date.now() - 7 * 86_400_000;
+    for (const [recipientId, reason] of reasons) {
+      const canView =
+        recipientId === instructorId ||
+        enrolledOn.has(`${recipientId}:${courseId}`);
+      if (roleOf.get(recipientId) === UserRole.Admin || !canView) continue;
+      db.insert(schema.notifications)
+        .values({
+          recipientId,
+          commentId: reply.id,
+          reason,
+          createdAt: reply.createdAt,
+          readAt: isOld ? reply.createdAt : null,
+        })
+        .run();
+    }
   }
 
   console.log(
