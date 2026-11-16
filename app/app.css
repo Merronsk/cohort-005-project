@@ -144,3 +144,21 @@
   width: 50%;
   animation: loading-bar-shimmer 1.2s ease-in-out infinite;
 }
+
+/* Linked Comment or Reply (#comment-<id>): a brief highlight that fades out.
+   :target covers the first paint before hydration; the comment-highlight
+   class covers client-side navigations, where :target isn't updated. */
+@keyframes comment-highlight-fade {
+  from {
+    background-color: color-mix(in oklch, var(--primary) 15%, transparent);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+
+.comment-highlight,
+[id^="comment-"]:target {
+  border-radius: var(--radius);
+  animation: comment-highlight-fade 2.5s ease-out;
+}
