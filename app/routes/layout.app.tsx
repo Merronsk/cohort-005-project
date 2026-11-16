@@ -17,7 +17,9 @@ import {
   teamMembers,
   TeamMemberRole,
   LessonProgressStatus,
+  UserRole,
 } from "~/db/schema";
+import { countUnread, listNotifications } from "~/lib/comments.server";
 
 function getAllUsers() {
   return db.select().from(users).all();
@@ -213,6 +215,17 @@ export async function loader({ request }: Route.LoaderArgs) {
     countryTierInfo,
     countries: COUNTRIES,
     isTeamAdmin: currentUserId ? isTeamAdmin(currentUserId) : false,
+    // Re-run on every navigation and submission, which keeps the bell fresh.
+    // Don't add shouldRevalidate to this route.
+    notifications:
+      currentUser &&
+      (currentUser.role === UserRole.Student ||
+        currentUser.role === UserRole.Instructor)
+        ? {
+            unreadCount: countUnread(db, currentUser.id),
+            items: listNotifications(db, currentUser.id),
+          }
+        : null,
   };
 }
 
@@ -225,6 +238,7 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
     countryTierInfo,
     countries,
     isTeamAdmin: userIsTeamAdmin,
+    notifications,
   } = loaderData;
 
   return (
@@ -233,6 +247,7 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
         currentUser={currentUser}
         recentCourses={recentCourses}
         isTeamAdmin={userIsTeamAdmin}
+        notifications={notifications}
       />
       <main className="flex-1 overflow-y-auto">
         <Outlet />

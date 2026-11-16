@@ -42,6 +42,13 @@ export enum TeamMemberRole {
   Member = "member",
 }
 
+// Why a Notification was sent. The kind (Comment vs Reply) follows from it.
+export enum NotificationReason {
+  CommentOnYourLesson = "comment_on_your_lesson",
+  ReplyToYourComment = "reply_to_your_comment",
+  ReplyInYourThread = "reply_in_your_thread",
+}
+
 // ─── Tables ───
 
 export const users = sqliteTable("users", {
@@ -357,6 +364,39 @@ export const comments = sqliteTable(
   (table) => [
     index("comments_lesson_idx").on(table.lessonId),
     index("comments_parent_idx").on(table.parentId),
+  ]
+);
+
+// One per (recipient, target Comment or Reply). Nothing is copied: the actor,
+// preview, lesson and course are joined live, and rows whose target is
+// soft-deleted are filtered out when read.
+export const notifications = sqliteTable(
+  "notifications",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    recipientId: integer("recipient_id")
+      .notNull()
+      .references(() => users.id),
+    // The target: the Comment for comment_on_your_lesson, the Reply itself
+    // for both Reply reasons.
+    commentId: integer("comment_id")
+      .notNull()
+      .references(() => comments.id),
+    reason: text("reason").$type<NotificationReason>().notNull(),
+    createdAt: text("created_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+    readAt: text("read_at"),
+  },
+  (table) => [
+    uniqueIndex("notifications_recipient_comment_unique").on(
+      table.recipientId,
+      table.commentId
+    ),
+    index("notifications_recipient_created_idx").on(
+      table.recipientId,
+      table.createdAt
+    ),
   ]
 );
 
