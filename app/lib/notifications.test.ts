@@ -1,6 +1,11 @@
 import { describe, it, expect } from "vitest";
 import { NotificationReason } from "~/db/schema";
-import { badgeLabel, previewText, reasonPhrase } from "./notifications";
+import {
+  badgeLabel,
+  previewText,
+  reasonPhrase,
+  visibleNotifications,
+} from "./notifications";
 
 describe("badgeLabel", () => {
   it("shows nothing at 0, the count up to nine, and 9+ above", () => {
@@ -36,5 +41,34 @@ describe("previewText", () => {
     expect(previewText("Look:\n```ts\nconst a = 1;\n```\n<b>bold</b>")).toBe(
       "Look: <b>bold</b>"
     );
+  });
+});
+
+describe("visibleNotifications", () => {
+  const items = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+
+  it("shows the newest six and counts the earlier ones", () => {
+    expect(visibleNotifications(items, false)).toEqual({
+      shown: [1, 2, 3, 4, 5, 6],
+      earlierCount: 3,
+    });
+  });
+
+  it("shows everything once expanded", () => {
+    expect(visibleNotifications(items, true)).toEqual({
+      shown: items,
+      earlierCount: 0,
+    });
+  });
+
+  it("has nothing earlier when six or fewer exist", () => {
+    expect(visibleNotifications([1, 2, 3, 4, 5, 6], false)).toEqual({
+      shown: [1, 2, 3, 4, 5, 6],
+      earlierCount: 0,
+    });
+    expect(visibleNotifications([], false)).toEqual({
+      shown: [],
+      earlierCount: 0,
+    });
   });
 });

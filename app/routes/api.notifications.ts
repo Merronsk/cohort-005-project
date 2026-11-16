@@ -4,7 +4,7 @@ import type { Route } from "./+types/api.notifications";
 import { db } from "~/db";
 import { getCurrentUserId } from "~/lib/session";
 import { parseFormData } from "~/lib/validation";
-import { markRead } from "~/lib/comments.server";
+import { markAllRead, markRead } from "~/lib/comments.server";
 
 // Notification actions. Submitting here revalidates the layout.app loader, so
 // the bell's badge updates with no extra request. Add new intents as members
@@ -14,6 +14,7 @@ const notificationActionSchema = z.discriminatedUnion("intent", [
     intent: z.literal("mark-read"),
     notificationId: z.coerce.number().int().positive(),
   }),
+  z.object({ intent: z.literal("mark-all-read") }),
 ]);
 
 export async function action({ request }: Route.ActionArgs) {
@@ -36,6 +37,10 @@ export async function action({ request }: Route.ActionArgs) {
         throw data("Notification not found", { status: 404 });
       }
       return redirect(href);
+    }
+    case "mark-all-read": {
+      markAllRead(db, currentUserId);
+      return { ok: true };
     }
   }
 }
