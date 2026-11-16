@@ -1,9 +1,19 @@
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "~/db/schema";
-import { and, count, desc, eq, isNull } from "drizzle-orm";
+import {
+  and,
+  count,
+  desc,
+  eq,
+  exists,
+  inArray,
+  isNull,
+  or,
+} from "drizzle-orm";
 import {
   comments,
   courses,
+  enrollments,
   lessons,
   modules,
   notifications,
@@ -109,8 +119,7 @@ type Recipient = { recipientId: number; reason: NotificationReason };
 // The Notifications a newly posted Comment or Reply creates.
 function recipientsFor(tx: Tx, comment: Comment): Recipient[] {
   if (comment.parentId !== null) {
-    // Reply Notifications come in a later ticket.
-    return [];
+    return replyRecipients(tx, comment, comment.parentId);
   }
   return commentRecipients(tx, comment);
 }
@@ -139,6 +148,84 @@ function commentRecipients(tx: Tx, comment: Comment): Recipient[] {
       reason: NotificationReason.CommentOnYourLesson,
     },
   ];
+}
+
+// A new Reply notifies the thread's other Participants: the Comment's author
+// (reply_to_your_comment, which wins if they also replied) and the authors of
+// its Replies that aren't deleted (reply_in_your_thread). Platform Admins are
+// never notified.
+function replyRecipients(
+  tx: Tx,
+  reply: Comment,
+  parentId: number
+): Recipient[] {
+  const parent = tx
+    .select({ userId: comments.userId })
+    .from(comments)
+    .where(eq(comments.id, parentId))
+    .get();
+  if (!parent) {
+    return [];
+  }
+
+  const replyAuthors = tx
+    .selectDistinct({ userId: comments.userId })
+    .from(comments)
+    .where(and(eq(comments.parentId, parentId), isNull(comments.deletedAt)))
+    .all()
+    .map((r) => r.userId);
+
+  const reasons = new Map<number, NotificationReason>();
+  for (const userId of replyAuthors) {
+    reasons.set(userId, NotificationReason.ReplyInYourThread);
+  }
+  reasons.set(parent.userId, NotificationReason.ReplyToYourComment);
+  reasons.delete(reply.userId);
+  if (reasons.size === 0) {
+    return [];
+  }
+
+  // Only people who can view the course's content right now: the owning
+  // Instructor or anyone with an Enrollment. PPP is deliberately not checked.
+  // Lapsed and refunded Students have no Enrollment, so they're skipped here
+  // but stay Participants.
+  const course = tx
+    .select({ id: courses.id, instructorId: courses.instructorId })
+    .from(lessons)
+    .innerJoin(modules, eq(modules.id, lessons.moduleId))
+    .innerJoin(courses, eq(courses.id, modules.courseId))
+    .where(eq(lessons.id, reply.lessonId))
+    .get();
+  if (!course) {
+    return [];
+  }
+  const enrolled = tx
+    .select({ id: enrollments.id })
+    .from(enrollments)
+    .where(
+      and(
+        eq(enrollments.userId, users.id),
+        eq(enrollments.courseId, course.id)
+      )
+    );
+  const eligible = new Set(
+    tx
+      .select({ id: users.id })
+      .from(users)
+      .where(
+        and(
+          inArray(users.id, [...reasons.keys()]),
+          inArray(users.role, [UserRole.Student, UserRole.Instructor]),
+          or(eq(users.id, course.instructorId), exists(enrolled))
+        )
+      )
+      .all()
+      .map((u) => u.id)
+  );
+
+  return [...reasons]
+    .filter(([userId]) => eligible.has(userId))
+    .map(([recipientId, reason]) => ({ recipientId, reason }));
 }
 
 // ─── Reading Notifications ───

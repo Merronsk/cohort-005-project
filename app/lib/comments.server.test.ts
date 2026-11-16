@@ -251,6 +251,187 @@ describe("comment_on_your_lesson Notifications", () => {
   });
 });
 
+describe("Reply Notifications", () => {
+  it("notifies the enrolled Comment author with reply_to_your_comment", () => {
+    enroll(base.user.id);
+    const comment = postComment(db, base.user.id, lessonId, null, "Question?");
+    const reply = postComment(
+      db,
+      base.instructor.id,
+      lessonId,
+      comment.id,
+      "Answer"
+    );
+
+    expect(listNotifications(db, base.user.id)).toEqual([
+      {
+        id: expect.any(Number),
+        reason: "reply_to_your_comment",
+        read: false,
+        createdAt: expect.any(String),
+        actorName: "Test Instructor",
+        preview: "Answer",
+        lessonId,
+        lessonTitle: "Lesson 1",
+        courseSlug: "test-course",
+        courseTitle: "Test Course",
+        targetId: reply.id,
+      },
+    ]);
+  });
+
+  it("notifies the other Participants with reply_in_your_thread", () => {
+    const ben = addUser("Ben", schema.UserRole.Student);
+    const cara = addUser("Cara", schema.UserRole.Student);
+    [base.user.id, ben.id, cara.id].forEach(enroll);
+    const comment = postComment(db, base.user.id, lessonId, null, "Q");
+    postComment(db, ben.id, lessonId, comment.id, "Me too");
+
+    const reply = postComment(db, cara.id, lessonId, comment.id, "Same");
+
+    expect(reasonsFor(reply.id)).toEqual({
+      [base.user.id]: "reply_to_your_comment",
+      [ben.id]: "reply_in_your_thread",
+    });
+  });
+
+  it("never notifies the Reply's author, a Platform Admin, or a non-Participant Instructor", () => {
+    const admin = addUser("Admin", schema.UserRole.Admin);
+    const ben = addUser("Ben", schema.UserRole.Student);
+    [base.user.id, ben.id].forEach(enroll);
+    const comment = postComment(db, base.user.id, lessonId, null, "Q");
+    postComment(db, admin.id, lessonId, comment.id, "Moderator note");
+
+    const reply = postComment(db, ben.id, lessonId, comment.id, "Me too");
+
+    expect(reasonsFor(reply.id)).toEqual({
+      [base.user.id]: "reply_to_your_comment",
+    });
+  });
+
+  it("still notifies others about a Platform Admin's Reply", () => {
+    const admin = addUser("Admin", schema.UserRole.Admin);
+    enroll(base.user.id);
+    const comment = postComment(db, base.user.id, lessonId, null, "Q");
+
+    const reply = postComment(db, admin.id, lessonId, comment.id, "Note");
+
+    expect(reasonsFor(reply.id)).toEqual({
+      [base.user.id]: "reply_to_your_comment",
+    });
+  });
+
+  it("skips a Participant without an Enrollment but notifies them again once re-enrolled", () => {
+    const ben = addUser("Ben", schema.UserRole.Student);
+    [base.user.id, ben.id].forEach(enroll);
+    const comment = postComment(db, base.user.id, lessonId, null, "Q");
+    postComment(db, ben.id, lessonId, comment.id, "Me too");
+    // Lapsed, or refunded: an approved Refund Request deletes the Enrollment.
+    unenroll(base.user.id);
+
+    const whileLapsed = postComment(
+      db,
+      base.instructor.id,
+      lessonId,
+      comment.id,
+      "Answer"
+    );
+    enroll(base.user.id);
+    const afterReturn = postComment(
+      db,
+      base.instructor.id,
+      lessonId,
+      comment.id,
+      "Follow-up"
+    );
+
+    expect(reasonsFor(whileLapsed.id)).toEqual({
+      [ben.id]: "reply_in_your_thread",
+    });
+    expect(reasonsFor(afterReturn.id)).toEqual({
+      [base.user.id]: "reply_to_your_comment",
+      [ben.id]: "reply_in_your_thread",
+    });
+  });
+
+  it("always treats the owning Instructor as eligible, but not another Instructor without an Enrollment", () => {
+    const guest = addUser("Guest", schema.UserRole.Instructor);
+    const ben = addUser("Ben", schema.UserRole.Student);
+    [base.user.id, ben.id].forEach(enroll);
+    const comment = postComment(db, base.user.id, lessonId, null, "Q");
+    postComment(db, base.instructor.id, lessonId, comment.id, "Answer");
+    postComment(db, guest.id, lessonId, comment.id, "Drive-by");
+
+    const reply = postComment(db, ben.id, lessonId, comment.id, "Thanks");
+
+    expect(reasonsFor(reply.id)).toEqual({
+      [base.user.id]: "reply_to_your_comment",
+      [base.instructor.id]: "reply_in_your_thread",
+    });
+  });
+
+  it("gives a Participant with several Replies one Notification, and the Comment author who replied reply_to_your_comment", () => {
+    const ben = addUser("Ben", schema.UserRole.Student);
+    [base.user.id, ben.id].forEach(enroll);
+    const comment = postComment(db, base.user.id, lessonId, null, "Q");
+    postComment(db, ben.id, lessonId, comment.id, "One");
+    postComment(db, ben.id, lessonId, comment.id, "Two");
+    postComment(db, base.user.id, lessonId, comment.id, "Still stuck");
+
+    const reply = postComment(
+      db,
+      base.instructor.id,
+      lessonId,
+      comment.id,
+      "Answer"
+    );
+
+    expect(reasonsFor(reply.id)).toEqual({
+      [base.user.id]: "reply_to_your_comment",
+      [ben.id]: "reply_in_your_thread",
+    });
+    expect(
+      listNotifications(db, ben.id).filter((n) => n.targetId === reply.id)
+    ).toHaveLength(1);
+  });
+
+  it("stops notifying a Participant whose only Reply was deleted", () => {
+    const ben = addUser("Ben", schema.UserRole.Student);
+    [base.user.id, ben.id].forEach(enroll);
+    const comment = postComment(db, base.user.id, lessonId, null, "Q");
+    const bens = postComment(db, ben.id, lessonId, comment.id, "Me too");
+    softDelete(bens.id);
+
+    const reply = postComment(
+      db,
+      base.instructor.id,
+      lessonId,
+      comment.id,
+      "Answer"
+    );
+
+    expect(reasonsFor(reply.id)).toEqual({
+      [base.user.id]: "reply_to_your_comment",
+    });
+  });
+
+  it("keeps Reply Notifications when the parent Comment is deleted, and hides a deleted Reply's own", () => {
+    const ben = addUser("Ben", schema.UserRole.Student);
+    [base.user.id, ben.id].forEach(enroll);
+    const comment = postComment(db, base.user.id, lessonId, null, "Q");
+    const kept = postComment(db, ben.id, lessonId, comment.id, "Kept");
+    const removed = postComment(db, ben.id, lessonId, comment.id, "Removed");
+
+    softDelete(comment.id);
+    softDelete(removed.id);
+
+    expect(listNotifications(db, base.user.id).map((n) => n.targetId)).toEqual(
+      [kept.id]
+    );
+    expect(countUnread(db, base.user.id)).toBe(1);
+  });
+});
+
 describe("markRead", () => {
   it("marks the recipient's Notification read and returns the lesson link", () => {
     const comment = postComment(db, base.user.id, lessonId, null, "Question?");
@@ -291,5 +472,29 @@ function softDelete(commentId: number) {
   db.update(schema.comments)
     .set({ deletedAt: new Date().toISOString() })
     .where(eq(schema.comments.id, commentId))
+    .run();
+}
+
+function enroll(userId: number) {
+  db.insert(schema.enrollments)
+    .values({ userId, courseId: base.course.id })
+    .run();
+}
+
+// For everyone in the test, the reason they were notified about this target,
+// as listNotifications shows it. People without one are left out.
+function reasonsFor(targetId: number) {
+  const everyone = db.select({ id: schema.users.id }).from(schema.users).all();
+  return Object.fromEntries(
+    everyone.flatMap(({ id }) => {
+      const n = listNotifications(db, id).find((n) => n.targetId === targetId);
+      return n ? [[id, n.reason]] : [];
+    })
+  );
+}
+
+function unenroll(userId: number) {
+  db.delete(schema.enrollments)
+    .where(eq(schema.enrollments.userId, userId))
     .run();
 }
