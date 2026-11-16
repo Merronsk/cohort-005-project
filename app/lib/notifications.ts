@@ -34,3 +34,21 @@ export function previewText(body: string): string {
     .replace(/\s+/g, " ")
     .trim();
 }
+
+/** How many rows the dropdown shows before "Show N earlier". */
+export const NOTIFICATIONS_SHOWN_FIRST = 6;
+
+/**
+ * The rows the dropdown shows (newest first) and how many earlier ones the
+ * "Show N earlier" link would reveal. Expanded, it shows every row.
+ */
+export function visibleNotifications<T>(
+  items: T[],
+  expanded: boolean
+): { shown: T[]; earlierCount: number } {
+  if (expanded) return { shown: items, earlierCount: 0 };
+  return {
+    shown: items.slice(0, NOTIFICATIONS_SHOWN_FIRST),
+    earlierCount: Math.max(0, items.length - NOTIFICATIONS_SHOWN_FIRST),
+  };
+}

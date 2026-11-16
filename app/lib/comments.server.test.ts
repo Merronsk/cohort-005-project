@@ -5,6 +5,7 @@ import * as schema from "~/db/schema";
 import {
   countUnread,
   listNotifications,
+  markAllRead,
   markRead,
   postComment,
 } from "./comments.server";
@@ -456,6 +457,38 @@ describe("markRead", () => {
 
   it("returns null for a Notification that doesn't exist", () => {
     expect(markRead(db, base.instructor.id, 9999)).toBeNull();
+  });
+});
+
+describe("markAllRead", () => {
+  it("clears every unread Notification, including those beyond the newest 50", () => {
+    Array.from({ length: 55 }, (_, i) =>
+      postComment(db, base.user.id, lessonId, null, `Comment ${i}`)
+    );
+
+    markAllRead(db, base.instructor.id);
+
+    expect(countUnread(db, base.instructor.id)).toBe(0);
+    expect(listNotifications(db, base.instructor.id).every((n) => n.read)).toBe(
+      true
+    );
+  });
+
+  it("leaves other recipients' Notifications unread", () => {
+    const other = addUser("Olga", schema.UserRole.Instructor);
+    const comment = postComment(db, base.user.id, lessonId, null, "Question?");
+    db.insert(schema.notifications)
+      .values({
+        recipientId: other.id,
+        commentId: comment.id,
+        reason: schema.NotificationReason.CommentOnYourLesson,
+      })
+      .run();
+
+    markAllRead(db, base.instructor.id);
+
+    expect(countUnread(db, base.instructor.id)).toBe(0);
+    expect(countUnread(db, other.id)).toBe(1);
   });
 });
 

@@ -2215,6 +2215,23 @@ This course is still in draft while the cluster examples are rewritten against t
     `Created ${countRows(schema.notifications)} notifications (${countRows(schema.notifications, isNull(schema.notifications.readAt))} unread).`
   );
 
+  // The bell's dropdown states, checked by hand with the DevUI switcher:
+  // Sarah has more than 6 (so "Show N earlier" appears) and Priya has none
+  // (so she sees "You're all caught up.").
+  const notificationsFor = (userId: number) =>
+    countRows(
+      schema.notifications,
+      eq(schema.notifications.recipientId, userId)
+    );
+  if (
+    notificationsFor(instructor1.id) <= 6 ||
+    notificationsFor(instructor3.id) !== 0
+  ) {
+    throw new Error(
+      "Seed must give Sarah more than 6 Notifications and Priya none."
+    );
+  }
+
   // ─── Lesson Progress ───
 
   // Helper to mark lessons as complete

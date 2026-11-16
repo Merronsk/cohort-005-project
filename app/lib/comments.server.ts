@@ -334,6 +334,21 @@ export function markRead(
   return `/courses/${row.courseSlug}/lessons/${row.lessonId}#${commentAnchorId(row.targetId)}`;
 }
 
+// Marks every unread Notification of the recipient read, including those
+// beyond the list's 50 and those whose target is deleted, so the badge drops
+// to zero.
+export function markAllRead(db: Db, recipientId: number): void {
+  db.update(notifications)
+    .set({ readAt: new Date().toISOString() })
+    .where(
+      and(
+        eq(notifications.recipientId, recipientId),
+        isNull(notifications.readAt)
+      )
+    )
+    .run();
+}
+
 // The recipient's Notifications whose target isn't deleted. The query must
 // join `comments` on the target.
 function visibleTo(recipientId: number) {
