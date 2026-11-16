@@ -1,4 +1,15 @@
-import { Outlet } from "react-router";
+import { Outlet, useSearchParams } from "react-router";
+// PROTOTYPE imports (branch prototype/notification-bell)
+import { buildPrototypeNotifications } from "~/components/notifications-prototype/fixtures.server";
+import {
+  VARIANTS,
+  useProtoNotifications,
+  VariantATrigger,
+  VariantBNavItem,
+  VariantCTrigger,
+  VariantCInbox,
+} from "~/components/notifications-prototype/variants";
+import { PrototypeSwitcher } from "~/components/prototype-switcher";
 import type { Route } from "./+types/layout.app";
 import { Sidebar } from "~/components/sidebar";
 import { DevUI } from "~/components/dev-ui";
@@ -213,10 +224,16 @@ export async function loader({ request }: Route.LoaderArgs) {
     countryTierInfo,
     countries: COUNTRIES,
     isTeamAdmin: currentUserId ? isTeamAdmin(currentUserId) : false,
+    protoNotifications: buildPrototypeNotifications(currentUser ?? null),
   };
 }
 
 export default function AppLayout({ loaderData }: Route.ComponentProps) {
+  // Remount the layout per user so the prototype's in-memory state resets on user switch.
+  return <AppLayoutInner key={loaderData.currentUser?.id ?? 0} loaderData={loaderData} />;
+}
+
+function AppLayoutInner({ loaderData }: { loaderData: Route.ComponentProps["loaderData"] }) {
   const {
     users,
     currentUser,
@@ -226,6 +243,10 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
     countries,
     isTeamAdmin: userIsTeamAdmin,
   } = loaderData;
+  const [params] = useSearchParams();
+  const variant = params.get("variant") ?? "A";
+  const proto = useProtoNotifications(loaderData.protoNotifications);
+  const hasBell = !!currentUser && currentUser.role !== "admin";
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -233,10 +254,24 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
         currentUser={currentUser}
         recentCourses={recentCourses}
         isTeamAdmin={userIsTeamAdmin}
+        headerSlot={
+          hasBell &&
+          (variant === "A" ? (
+            <VariantATrigger state={proto} />
+          ) : variant === "C" ? (
+            <VariantCTrigger state={proto} />
+          ) : null)
+        }
+        navSlot={hasBell && variant === "B" ? <VariantBNavItem state={proto} /> : null}
       />
       <main className="flex-1 overflow-y-auto">
-        <Outlet />
+        {variant === "C" && params.get("inbox") === "1" ? (
+          <VariantCInbox state={proto} />
+        ) : (
+          <Outlet />
+        )}
       </main>
+      <PrototypeSwitcher variants={VARIANTS} current={variant} />
       <DevUI
         users={users}
         currentUser={currentUser}
