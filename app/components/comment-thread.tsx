@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useFetcher } from "react-router";
+import { useFetcher, useLocation } from "react-router";
 import { toast } from "sonner";
 import { MessageSquare, Pencil, Reply, Trash2 } from "lucide-react";
 import { Button } from "~/components/ui/button";
@@ -7,7 +7,41 @@ import { Card, CardContent } from "~/components/ui/card";
 import { Textarea } from "~/components/ui/textarea";
 import { UserAvatar } from "~/components/user-avatar";
 import { cn, formatRelativeTime } from "~/lib/utils";
-import { MAX_COMMENT_LENGTH } from "~/lib/comments";
+import {
+  MAX_COMMENT_LENGTH,
+  commentAnchorId,
+  commentIdFromHash,
+} from "~/lib/comments";
+
+const HIGHLIGHT_CLASS = "comment-highlight";
+const HIGHLIGHT_MS = 2500;
+
+/**
+ * Scrolls to and briefly highlights the Comment or Reply named by a
+ * `#comment-<id>` hash. A class rather than plain CSS :target, because
+ * :target isn't updated by client-side navigations (history.pushState).
+ */
+function useHighlightLinkedComment() {
+  const { hash } = useLocation();
+
+  useEffect(() => {
+    const commentId = commentIdFromHash(hash);
+    if (commentId === null) return;
+    const element = document.getElementById(commentAnchorId(commentId));
+    if (!element) return;
+
+    element.scrollIntoView({ block: "center" });
+    element.classList.add(HIGHLIGHT_CLASS);
+    const timeout = setTimeout(
+      () => element.classList.remove(HIGHLIGHT_CLASS),
+      HIGHLIGHT_MS
+    );
+    return () => {
+      clearTimeout(timeout);
+      element.classList.remove(HIGHLIGHT_CLASS);
+    };
+  }, [hash]);
+}
 
 // Bodies arrive pre-rendered from the server (renderComment), because comments
 // are untrusted markdown and the sanitising renderer is server-only.
@@ -210,7 +244,7 @@ function CommentItem({
 
   if (comment.deleted) {
     return (
-      <div className="py-3">
+      <div id={commentAnchorId(comment.id)} className="scroll-mt-24 py-3">
         <p className="text-sm italic text-muted-foreground">
           This comment was deleted.
         </p>
@@ -225,7 +259,10 @@ function CommentItem({
   }
 
   return (
-    <div className={cn("py-3", isReply && "border-l pl-4")}>
+    <div
+      id={commentAnchorId(comment.id)}
+      className={cn("scroll-mt-24 py-3", isReply && "border-l pl-4")}
+    >
       <div className="flex items-start gap-3">
         <UserAvatar
           name={comment.author.name}
@@ -352,6 +389,8 @@ export function CommentThread({
   canPost: boolean;
   instructorName: string;
 }) {
+  useHighlightLinkedComment();
+
   return (
     <Card className="mb-8">
       <CardContent className="p-6">
