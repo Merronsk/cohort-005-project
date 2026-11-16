@@ -1,16 +1,31 @@
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "~/db/schema";
-import { eq } from "drizzle-orm";
-import { comments, lessons } from "~/db/schema";
-import { MAX_COMMENT_LENGTH, MIN_COMMENT_LENGTH } from "~/lib/comments";
+import { and, count, desc, eq, isNull } from "drizzle-orm";
+import {
+  comments,
+  courses,
+  lessons,
+  modules,
+  notifications,
+  NotificationReason,
+  UserRole,
+  users,
+} from "~/db/schema";
+import {
+  commentAnchorId,
+  MAX_COMMENT_LENGTH,
+  MIN_COMMENT_LENGTH,
+} from "~/lib/comments";
 
 // ─── Comments and Notifications ───
-// Posting Comments and Replies. See GLOSSARY.md for the language.
+// Posting Comments and Replies, and the Notifications they create.
+// See GLOSSARY.md for the language.
 //
 // Every function takes the database first, so tests can hand in an in-memory
 // one. Uses positional parameters (project convention).
 
 export type Db = BetterSQLite3Database<typeof schema>;
+type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
 export type Comment = typeof comments.$inferSelect;
 
@@ -54,11 +69,23 @@ export function postComment(
     }
   }
 
-  return db
-    .insert(comments)
-    .values({ userId: authorId, lessonId, parentId, body: trimmed })
-    .returning()
-    .get();
+  return db.transaction((tx) => {
+    const comment = tx
+      .insert(comments)
+      .values({ userId: authorId, lessonId, parentId, body: trimmed })
+      .returning()
+      .get();
+
+    for (const { recipientId, reason } of recipientsFor(tx, comment)) {
+      tx.insert(notifications)
+        .values({ recipientId, commentId: comment.id, reason })
+        // One Notification per recipient per target (unique key).
+        .onConflictDoNothing()
+        .run();
+    }
+
+    return comment;
+  });
 }
 
 // Throws a user-correctable Error; returns the trimmed body otherwise.
@@ -73,4 +100,158 @@ function assertValidBody(body: string): string {
     );
   }
   return trimmed;
+}
+
+// ─── Who is notified ───
+
+type Recipient = { recipientId: number; reason: NotificationReason };
+
+// The Notifications a newly posted Comment or Reply creates.
+function recipientsFor(tx: Tx, comment: Comment): Recipient[] {
+  if (comment.parentId !== null) {
+    // Reply Notifications come in a later ticket.
+    return [];
+  }
+  return commentRecipients(tx, comment);
+}
+
+// A new top-level Comment by a Student who isn't the course's Instructor
+// notifies the course's Instructor.
+function commentRecipients(tx: Tx, comment: Comment): Recipient[] {
+  const row = tx
+    .select({ instructorId: courses.instructorId, authorRole: users.role })
+    .from(lessons)
+    .innerJoin(modules, eq(modules.id, lessons.moduleId))
+    .innerJoin(courses, eq(courses.id, modules.courseId))
+    .innerJoin(users, eq(users.id, comment.userId))
+    .where(eq(lessons.id, comment.lessonId))
+    .get();
+  if (
+    !row ||
+    row.authorRole !== UserRole.Student ||
+    row.instructorId === comment.userId
+  ) {
+    return [];
+  }
+  return [
+    {
+      recipientId: row.instructorId,
+      reason: NotificationReason.CommentOnYourLesson,
+    },
+  ];
+}
+
+// ─── Reading Notifications ───
+
+export const NOTIFICATION_LIST_LIMIT = 50;
+
+export type NotificationItem = {
+  id: number;
+  reason: NotificationReason;
+  read: boolean;
+  createdAt: string;
+  actorName: string;
+  // The target's current body. Untrusted Markdown: show as plain text only.
+  preview: string;
+  lessonId: number;
+  lessonTitle: string;
+  courseSlug: string;
+  courseTitle: string;
+  // The target Comment or Reply, for the #comment-<id> anchor.
+  targetId: number;
+};
+
+// The recipient's newest Notifications whose target isn't deleted, newest
+// first. The actor, preview, lesson and course are joined live.
+export function listNotifications(
+  db: Db,
+  recipientId: number
+): NotificationItem[] {
+  return db
+    .select({
+      id: notifications.id,
+      reason: notifications.reason,
+      readAt: notifications.readAt,
+      createdAt: notifications.createdAt,
+      actorName: users.name,
+      preview: comments.body,
+      lessonId: lessons.id,
+      lessonTitle: lessons.title,
+      courseSlug: courses.slug,
+      courseTitle: courses.title,
+      targetId: comments.id,
+    })
+    .from(notifications)
+    .innerJoin(comments, eq(comments.id, notifications.commentId))
+    .innerJoin(users, eq(users.id, comments.userId))
+    .innerJoin(lessons, eq(lessons.id, comments.lessonId))
+    .innerJoin(modules, eq(modules.id, lessons.moduleId))
+    .innerJoin(courses, eq(courses.id, modules.courseId))
+    .where(visibleTo(recipientId))
+    .orderBy(desc(notifications.createdAt), desc(notifications.id))
+    .limit(NOTIFICATION_LIST_LIMIT)
+    .all()
+    .map(({ readAt, ...row }) => ({ ...row, read: readAt !== null }));
+}
+
+// Every unread Notification whose target isn't deleted, beyond the list's 50.
+export function countUnread(db: Db, recipientId: number): number {
+  const row = db
+    .select({ n: count() })
+    .from(notifications)
+    .innerJoin(comments, eq(comments.id, notifications.commentId))
+    .where(and(visibleTo(recipientId), isNull(notifications.readAt)))
+    .get();
+  return row?.n ?? 0;
+}
+
+// ─── Marking read ───
+
+// Marks the recipient's own Notification read and returns the lesson link
+// with the target's anchor. Null when it isn't theirs or doesn't exist.
+export function markRead(
+  db: Db,
+  recipientId: number,
+  notificationId: number
+): string | null {
+  const row = db
+    .select({
+      readAt: notifications.readAt,
+      targetId: comments.id,
+      lessonId: lessons.id,
+      courseSlug: courses.slug,
+    })
+    .from(notifications)
+    .innerJoin(comments, eq(comments.id, notifications.commentId))
+    .innerJoin(lessons, eq(lessons.id, comments.lessonId))
+    .innerJoin(modules, eq(modules.id, lessons.moduleId))
+    .innerJoin(courses, eq(courses.id, modules.courseId))
+    .where(
+      and(
+        eq(notifications.id, notificationId),
+        eq(notifications.recipientId, recipientId)
+      )
+    )
+    .get();
+  if (!row) {
+    return null;
+  }
+
+  if (row.readAt === null) {
+    db.update(notifications)
+      .set({ readAt: new Date().toISOString() })
+      .where(eq(notifications.id, notificationId))
+      .run();
+  }
+
+  return `/courses/${row.courseSlug}/lessons/${row.lessonId}#${commentAnchorId(row.targetId)}`;
+}
+
+// The recipient's Notifications whose target isn't deleted. The query must
+// join `comments` on the target.
+function visibleTo(recipientId: number) {
+  return and(
+    eq(notifications.recipientId, recipientId),
+    isNull(comments.deletedAt)
+  );
 }

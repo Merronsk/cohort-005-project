@@ -13,6 +13,7 @@ import {
   RefundStatus,
   QuestionType,
   TeamMemberRole,
+  NotificationReason,
 } from "../app/db/schema";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -65,6 +66,7 @@ async function seed() {
 
   // Drop and recreate tables for a clean seed
   sqlite.exec(`
+    DROP TABLE IF EXISTS notifications;
     DROP TABLE IF EXISTS comments;
     DROP TABLE IF EXISTS course_ratings;
     DROP TABLE IF EXISTS video_watch_events;
@@ -1990,8 +1992,71 @@ This course is still in draft while the cluster examples are rewritten against t
     createdAt: daysAgo(7),
   });
 
+  // A busy day on Sarah's course: enough fresh questions that her bell shows
+  // "9+" (see Notifications below).
+  const busyDay: [number, number, string][] = [
+    [0, 5, "Is `unknown` always safer than `any`, or are there cases where `any` is the right call?"],
+    [1, 6, "The compile step printed a warning about `lib` — is that something I should fix now?"],
+    [2, 8, "Could you show the same example with an `enum` instead of a union? I'm not sure which to reach for."],
+    [3, 9, "What's the difference between `readonly` arrays and `as const` here?"],
+    [0, 10, "My editor shows a different error message than the video. Has the wording changed in newer versions?"],
+    [1, 11, "Should `strictNullChecks` be on from day one for a new project?"],
+    [2, 3, "Is there a quick way to see the type TypeScript inferred for a variable?"],
+    [3, 2, "Do the exercises at the end of this module have solutions somewhere?"],
+  ];
+  const course1Commenters = [students[0], students[1], students[2], students[4]];
+  busyDay.forEach(([who, lesson, body], i) => {
+    comment({
+      lessonId: course1LessonIds[lesson],
+      userId: course1Commenters[who].id,
+      body,
+      createdAt: hoursAgo(2 + i * 2),
+    });
+  });
+
   console.log(
     `Created ${countRows(schema.comments)} lesson comments across ${countRows(schema.comments, isNull(schema.comments.parentId))} threads.`
+  );
+
+  // ─── Notifications ───
+  // Inserted directly, following postComment's creation rules: each top-level
+  // Comment by a Student notifies the course's Instructor (if that isn't the
+  // author). The deleted question gets one too; it's hidden when read. Ones
+  // older than a week are read, so Sarah has some read rows and >9 unread.
+
+  const notifiable = db
+    .select({
+      commentId: schema.comments.id,
+      authorId: schema.comments.userId,
+      createdAt: schema.comments.createdAt,
+      instructorId: schema.courses.instructorId,
+    })
+    .from(schema.comments)
+    .innerJoin(schema.users, eq(schema.users.id, schema.comments.userId))
+    .innerJoin(schema.lessons, eq(schema.lessons.id, schema.comments.lessonId))
+    .innerJoin(schema.modules, eq(schema.modules.id, schema.lessons.moduleId))
+    .innerJoin(schema.courses, eq(schema.courses.id, schema.modules.courseId))
+    .where(
+      sql`${schema.comments.parentId} is null and ${schema.users.role} = ${UserRole.Student}`
+    )
+    .all()
+    .filter((c) => c.instructorId !== c.authorId);
+
+  for (const c of notifiable) {
+    const isOld = new Date(c.createdAt).getTime() < Date.now() - 7 * 86_400_000;
+    db.insert(schema.notifications)
+      .values({
+        recipientId: c.instructorId,
+        commentId: c.commentId,
+        reason: NotificationReason.CommentOnYourLesson,
+        createdAt: c.createdAt,
+        readAt: isOld ? c.createdAt : null,
+      })
+      .run();
+  }
+
+  console.log(
+    `Created ${countRows(schema.notifications)} notifications (${countRows(schema.notifications, isNull(schema.notifications.readAt))} unread).`
   );
 
   // ─── Lesson Progress ───
@@ -2840,6 +2905,9 @@ This course is still in draft while the cluster examples are rewritten against t
   console.log(`  Enrollments: ${countRows(schema.enrollments)}`);
   console.log(`  Course ratings: ${countRows(schema.courseRatings)}`);
   console.log(`  Lesson comments: ${countRows(schema.comments)}`);
+  console.log(
+    `  Notifications: ${countRows(schema.notifications)} (${countRows(schema.notifications, isNull(schema.notifications.readAt))} unread)`
+  );
   console.log(
     `  Lesson progress: ${countRows(schema.lessonProgress)} (${countRows(schema.lessonProgress, eq(schema.lessonProgress.status, LessonProgressStatus.Completed))} completed)`
   );

@@ -2,7 +2,12 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { createTestDb, seedBaseData } from "~/test/setup";
 import * as schema from "~/db/schema";
-import { postComment } from "./comments.server";
+import {
+  countUnread,
+  listNotifications,
+  markRead,
+  postComment,
+} from "./comments.server";
 
 type TestDb = ReturnType<typeof createTestDb>;
 
@@ -131,3 +136,160 @@ describe("postComment", () => {
     expect(db.select().from(schema.comments).all()).toHaveLength(1);
   });
 });
+
+describe("comment_on_your_lesson Notifications", () => {
+  it("notifies the course's Instructor when a Student posts a Comment", () => {
+    const comment = postComment(db, base.user.id, lessonId, null, "Question?");
+
+    expect(listNotifications(db, base.instructor.id)).toEqual([
+      {
+        id: expect.any(Number),
+        reason: "comment_on_your_lesson",
+        read: false,
+        createdAt: expect.any(String),
+        actorName: "Test User",
+        preview: "Question?",
+        lessonId,
+        lessonTitle: "Lesson 1",
+        courseSlug: "test-course",
+        courseTitle: "Test Course",
+        targetId: comment.id,
+      },
+    ]);
+  });
+
+  it("doesn't notify the Instructor about their own Comment", () => {
+    postComment(db, base.instructor.id, lessonId, null, "Note from me");
+
+    expect(listNotifications(db, base.instructor.id)).toEqual([]);
+  });
+
+  it("doesn't notify anyone about a Platform Admin's Comment", () => {
+    const admin = addUser("Admin", schema.UserRole.Admin);
+    postComment(db, admin.id, lessonId, null, "Moderator note");
+
+    expect(listNotifications(db, base.instructor.id)).toEqual([]);
+    expect(countUnread(db, base.instructor.id)).toBe(0);
+  });
+
+  it("doesn't notify a Student about anything in this ticket's scope", () => {
+    postComment(db, base.user.id, lessonId, null, "Question?");
+
+    expect(listNotifications(db, base.user.id)).toEqual([]);
+  });
+
+  it("hides the Notification once its target is deleted, read or unread", () => {
+    const unread = postComment(db, base.user.id, lessonId, null, "One");
+    const read = postComment(db, base.user.id, lessonId, null, "Two");
+    const kept = postComment(db, base.user.id, lessonId, null, "Three");
+    const readNotification = listNotifications(db, base.instructor.id).find(
+      (n) => n.targetId === read.id
+    )!;
+    markRead(db, base.instructor.id, readNotification.id);
+
+    softDelete(unread.id);
+    softDelete(read.id);
+
+    expect(
+      listNotifications(db, base.instructor.id).map((n) => n.targetId)
+    ).toEqual([kept.id]);
+    expect(countUnread(db, base.instructor.id)).toBe(1);
+  });
+
+  it("shows the edited body as the preview and creates nothing on edit", () => {
+    const comment = postComment(db, base.user.id, lessonId, null, "Typo");
+    // Edit, the same way the lesson route's edit does.
+    db.update(schema.comments)
+      .set({ body: "Fixed", editedAt: new Date().toISOString() })
+      .where(eq(schema.comments.id, comment.id))
+      .run();
+
+    const list = listNotifications(db, base.instructor.id);
+    expect(list).toHaveLength(1);
+    expect(list[0].preview).toBe("Fixed");
+  });
+
+  it("lists newest first, capped at 50, while countUnread counts them all", () => {
+    const posted = Array.from({ length: 55 }, (_, i) =>
+      postComment(db, base.user.id, lessonId, null, `Comment ${i}`)
+    );
+
+    const list = listNotifications(db, base.instructor.id);
+    expect(list).toHaveLength(50);
+    expect(list[0].targetId).toBe(posted[54].id);
+    expect(list[49].targetId).toBe(posted[5].id);
+    expect(countUnread(db, base.instructor.id)).toBe(55);
+  });
+
+  it("orders by creation time, not by insertion order", () => {
+    const older = postComment(db, base.user.id, lessonId, null, "Older");
+    const newer = postComment(db, base.user.id, lessonId, null, "Newer");
+    db.update(schema.notifications)
+      .set({ createdAt: "2020-01-01T00:00:00.000Z" })
+      .where(eq(schema.notifications.commentId, newer.id))
+      .run();
+
+    expect(
+      listNotifications(db, base.instructor.id).map((n) => n.targetId)
+    ).toEqual([older.id, newer.id]);
+  });
+
+  it("can't hold a second Notification for the same recipient and target", () => {
+    const comment = postComment(db, base.user.id, lessonId, null, "Question?");
+
+    expect(() =>
+      db
+        .insert(schema.notifications)
+        .values({
+          recipientId: base.instructor.id,
+          commentId: comment.id,
+          reason: schema.NotificationReason.CommentOnYourLesson,
+        })
+        .run()
+    ).toThrow(/UNIQUE/);
+    expect(listNotifications(db, base.instructor.id)).toHaveLength(1);
+  });
+});
+
+describe("markRead", () => {
+  it("marks the recipient's Notification read and returns the lesson link", () => {
+    const comment = postComment(db, base.user.id, lessonId, null, "Question?");
+    const [notification] = listNotifications(db, base.instructor.id);
+
+    const href = markRead(db, base.instructor.id, notification.id);
+
+    expect(href).toBe(
+      `/courses/test-course/lessons/${lessonId}#comment-${comment.id}`
+    );
+    expect(listNotifications(db, base.instructor.id)[0].read).toBe(true);
+    expect(countUnread(db, base.instructor.id)).toBe(0);
+  });
+
+  it("returns null and changes nothing for someone else's Notification", () => {
+    postComment(db, base.user.id, lessonId, null, "Question?");
+    const [notification] = listNotifications(db, base.instructor.id);
+
+    expect(markRead(db, base.user.id, notification.id)).toBeNull();
+    expect(countUnread(db, base.instructor.id)).toBe(1);
+  });
+
+  it("returns null for a Notification that doesn't exist", () => {
+    expect(markRead(db, base.instructor.id, 9999)).toBeNull();
+  });
+});
+
+function addUser(name: string, role: schema.UserRole) {
+  return db
+    .insert(schema.users)
+    .values({ name, email: `${name.toLowerCase()}@example.com`, role })
+    .returning()
+    .get();
+}
+
+// Soft delete, the same way the lesson route's delete does.
+function softDelete(commentId: number) {
+  db.update(schema.comments)
+    .set({ deletedAt: new Date().toISOString() })
+    .where(eq(schema.comments.id, commentId))
+    .run();
+}

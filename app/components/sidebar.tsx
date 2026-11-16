@@ -4,6 +4,10 @@ import { cn } from "~/lib/utils";
 import { UserRole } from "~/db/schema";
 import { UserAvatar } from "~/components/user-avatar";
 import {
+  NotificationBell,
+  type BellNotifications,
+} from "~/components/notification-bell";
+import {
   BookOpen,
   ChartColumn,
   LayoutDashboard,
@@ -41,6 +45,8 @@ interface SidebarProps {
   currentUser: CurrentUser | null;
   recentCourses?: RecentCourse[];
   isTeamAdmin?: boolean;
+  // Null for Platform Admins and signed-out visitors: no bell.
+  notifications?: BellNotifications | null;
 }
 
 interface NavItem {
@@ -117,6 +123,7 @@ export function Sidebar({
   currentUser,
   recentCourses = [],
   isTeamAdmin = false,
+  notifications = null,
 }: SidebarProps) {
   const currentUserRole = currentUser?.role ?? null;
   const [isDark, setIsDark] = useState(false);
@@ -140,6 +147,7 @@ export function Sidebar({
         <NavLink to="/" className="text-lg font-bold tracking-tight">
           Cadence
         </NavLink>
+        {notifications && <NotificationBell notifications={notifications} />}
       </div>
 
       <nav className="flex-1 space-y-1 p-3">
