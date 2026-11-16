@@ -1,5 +1,6 @@
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "~/db/schema";
+import type { SQLiteSelect } from "drizzle-orm/sqlite-core";
 import {
   and,
   count,
@@ -21,6 +22,7 @@ import {
   UserRole,
   users,
 } from "~/db/schema";
+import { NOTIFIABLE_ROLES } from "~/lib/notifications";
 import {
   commentAnchorId,
   MAX_COMMENT_LENGTH,
@@ -39,6 +41,14 @@ type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
 export type Comment = typeof comments.$inferSelect;
 
+// Joins the course of the query's `lessons` row, through its module, so the
+// query can select from `courses`.
+function joinCourse<T extends SQLiteSelect>(query: T) {
+  return query
+    .innerJoin(modules, eq(modules.id, lessons.moduleId))
+    .innerJoin(courses, eq(courses.id, modules.courseId));
+}
+
 export function postComment(
   db: Db,
   authorId: number,
@@ -48,38 +58,40 @@ export function postComment(
 ): Comment {
   const trimmed = assertValidBody(body);
 
-  const lesson = db
-    .select()
-    .from(lessons)
-    .where(eq(lessons.id, lessonId))
-    .get();
-  if (!lesson) {
-    throw new Error("Lesson not found");
-  }
-
-  if (parentId !== null) {
-    const parent = db
-      .select()
-      .from(comments)
-      .where(eq(comments.id, parentId))
-      .get();
-    if (!parent) {
-      throw new Error("Parent comment not found");
-    }
-    if (parent.lessonId !== lessonId) {
-      throw new Error("Parent comment belongs to a different lesson");
-    }
-    if (parent.parentId !== null) {
-      throw new Error("Replies can only be one level deep");
-    }
-    // The UI hides the Reply button on a deleted Comment; this stops a
-    // crafted request too.
-    if (parent.deletedAt !== null) {
-      throw new Error("This Comment has been deleted");
-    }
-  }
-
+  // The checks run in the same transaction as the insert, so a Comment
+  // deleted at the same moment can't slip through.
   return db.transaction((tx) => {
+    const lesson = tx
+      .select()
+      .from(lessons)
+      .where(eq(lessons.id, lessonId))
+      .get();
+    if (!lesson) {
+      throw new Error("Lesson not found");
+    }
+
+    if (parentId !== null) {
+      const parent = tx
+        .select()
+        .from(comments)
+        .where(eq(comments.id, parentId))
+        .get();
+      if (!parent) {
+        throw new Error("Parent comment not found");
+      }
+      if (parent.lessonId !== lessonId) {
+        throw new Error("Parent comment belongs to a different lesson");
+      }
+      if (parent.parentId !== null) {
+        throw new Error("Replies can only be one level deep");
+      }
+      // The UI hides the Reply button on a deleted Comment; this stops a
+      // crafted request too.
+      if (parent.deletedAt !== null) {
+        throw new Error("This Comment has been deleted");
+      }
+    }
+
     const comment = tx
       .insert(comments)
       .values({ userId: authorId, lessonId, parentId, body: trimmed })
@@ -99,7 +111,7 @@ export function postComment(
 }
 
 // Throws a user-correctable Error; returns the trimmed body otherwise.
-function assertValidBody(body: string): string {
+export function assertValidBody(body: string): string {
   const trimmed = body.trim();
   if (trimmed.length < MIN_COMMENT_LENGTH) {
     throw new Error("Comment cannot be empty");
@@ -127,11 +139,11 @@ function recipientsFor(tx: Tx, comment: Comment): Recipient[] {
 // A new top-level Comment by a Student who isn't the course's Instructor
 // notifies the course's Instructor.
 function commentRecipients(tx: Tx, comment: Comment): Recipient[] {
-  const row = tx
+  const query = tx
     .select({ instructorId: courses.instructorId, authorRole: users.role })
     .from(lessons)
-    .innerJoin(modules, eq(modules.id, lessons.moduleId))
-    .innerJoin(courses, eq(courses.id, modules.courseId))
+    .$dynamic();
+  const row = joinCourse(query)
     .innerJoin(users, eq(users.id, comment.userId))
     .where(eq(lessons.id, comment.lessonId))
     .get();
@@ -189,11 +201,11 @@ function replyRecipients(
   // Instructor or anyone with an Enrollment. PPP is deliberately not checked.
   // Lapsed and refunded Students have no Enrollment, so they're skipped here
   // but stay Participants.
-  const course = tx
+  const courseQuery = tx
     .select({ id: courses.id, instructorId: courses.instructorId })
     .from(lessons)
-    .innerJoin(modules, eq(modules.id, lessons.moduleId))
-    .innerJoin(courses, eq(courses.id, modules.courseId))
+    .$dynamic();
+  const course = joinCourse(courseQuery)
     .where(eq(lessons.id, reply.lessonId))
     .get();
   if (!course) {
@@ -215,7 +227,7 @@ function replyRecipients(
       .where(
         and(
           inArray(users.id, [...reasons.keys()]),
-          inArray(users.role, [UserRole.Student, UserRole.Instructor]),
+          inArray(users.role, [...NOTIFIABLE_ROLES]),
           or(eq(users.id, course.instructorId), exists(enrolled))
         )
       )
@@ -254,7 +266,7 @@ export function listNotifications(
   db: Db,
   recipientId: number
 ): NotificationItem[] {
-  return db
+  const query = db
     .select({
       id: notifications.id,
       reason: notifications.reason,
@@ -272,8 +284,8 @@ export function listNotifications(
     .innerJoin(comments, eq(comments.id, notifications.commentId))
     .innerJoin(users, eq(users.id, comments.userId))
     .innerJoin(lessons, eq(lessons.id, comments.lessonId))
-    .innerJoin(modules, eq(modules.id, lessons.moduleId))
-    .innerJoin(courses, eq(courses.id, modules.courseId))
+    .$dynamic();
+  return joinCourse(query)
     .where(visibleTo(recipientId))
     .orderBy(desc(notifications.createdAt), desc(notifications.id))
     .limit(NOTIFICATION_LIST_LIMIT)
@@ -295,13 +307,14 @@ export function countUnread(db: Db, recipientId: number): number {
 // ─── Marking read ───
 
 // Marks the recipient's own Notification read and returns the lesson link
-// with the target's anchor. Null when it isn't theirs or doesn't exist.
+// with the target's anchor. Null when it isn't theirs, doesn't exist, or its
+// target is deleted.
 export function markRead(
   db: Db,
   recipientId: number,
   notificationId: number
 ): string | null {
-  const row = db
+  const query = db
     .select({
       readAt: notifications.readAt,
       targetId: comments.id,
@@ -311,14 +324,9 @@ export function markRead(
     .from(notifications)
     .innerJoin(comments, eq(comments.id, notifications.commentId))
     .innerJoin(lessons, eq(lessons.id, comments.lessonId))
-    .innerJoin(modules, eq(modules.id, lessons.moduleId))
-    .innerJoin(courses, eq(courses.id, modules.courseId))
-    .where(
-      and(
-        eq(notifications.id, notificationId),
-        eq(notifications.recipientId, recipientId)
-      )
-    )
+    .$dynamic();
+  const row = joinCourse(query)
+    .where(and(eq(notifications.id, notificationId), visibleTo(recipientId)))
     .get();
   if (!row) {
     return null;

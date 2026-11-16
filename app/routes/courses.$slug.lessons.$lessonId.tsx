@@ -5,12 +5,11 @@ import type { Route } from "./+types/courses.$slug.lessons.$lessonId";
 import { getCurrentUserId } from "~/lib/session";
 import { getAccess, requireContentAccess } from "~/lib/access.server";
 import { renderComment } from "~/lib/comment-markdown.server";
-import { postComment } from "~/lib/comments.server";
+import { assertValidBody, postComment } from "~/lib/comments.server";
 import {
   CommentThread,
   type RenderedComment,
 } from "~/components/comment-thread";
-import { MIN_COMMENT_LENGTH, MAX_COMMENT_LENGTH } from "~/lib/comments";
 import { db } from "~/db";
 import {
   categories,
@@ -326,19 +325,6 @@ function getCourseForLesson(lessonId: number) {
 
 function getCommentById(commentId: number) {
   return db.select().from(comments).where(eq(comments.id, commentId)).get();
-}
-
-function assertValidBody(body: string) {
-  const trimmed = body.trim();
-  if (trimmed.length < MIN_COMMENT_LENGTH) {
-    throw new Error("Comment cannot be empty");
-  }
-  if (trimmed.length > MAX_COMMENT_LENGTH) {
-    throw new Error(
-      `Comment must be ${MAX_COMMENT_LENGTH} characters or fewer`
-    );
-  }
-  return trimmed;
 }
 
 function getLessonThread(lessonId: number): ThreadComment[] {

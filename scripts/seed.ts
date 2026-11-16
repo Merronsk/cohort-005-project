@@ -15,6 +15,7 @@ import {
   TeamMemberRole,
   NotificationReason,
 } from "../app/db/schema";
+import { canReceiveNotifications } from "../app/lib/notifications";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -32,6 +33,11 @@ function daysAgo(n: number): string {
   const d = new Date();
   d.setDate(d.getDate() - n);
   return d.toISOString();
+}
+
+// Seeded Notifications older than a week start out read.
+function isOlderThanAWeek(iso: string): boolean {
+  return new Date(iso).getTime() < Date.now() - 7 * 86_400_000;
 }
 
 function hoursAgo(n: number): string {
@@ -2122,14 +2128,13 @@ This course is still in draft while the cluster examples are rewritten against t
     .filter((c) => c.instructorId !== c.authorId);
 
   for (const c of notifiable) {
-    const isOld = new Date(c.createdAt).getTime() < Date.now() - 7 * 86_400_000;
     db.insert(schema.notifications)
       .values({
         recipientId: c.instructorId,
         commentId: c.commentId,
         reason: NotificationReason.CommentOnYourLesson,
         createdAt: c.createdAt,
-        readAt: isOld ? c.createdAt : null,
+        readAt: isOlderThanAWeek(c.createdAt) ? c.createdAt : null,
       })
       .run();
   }
@@ -2186,26 +2191,29 @@ This course is still in draft while the cluster examples are rewritten against t
         reasons.set(earlier.userId, NotificationReason.ReplyInYourThread);
       }
     }
-    reasons.set(
-      authorOf.get(reply.parentId!)!,
-      NotificationReason.ReplyToYourComment
-    );
+    const commentAuthorId =
+      reply.parentId === null ? undefined : authorOf.get(reply.parentId);
+    if (commentAuthorId === undefined) {
+      throw new Error(`Seeded Reply ${reply.id} has no parent Comment.`);
+    }
+    reasons.set(commentAuthorId, NotificationReason.ReplyToYourComment);
     reasons.delete(reply.userId);
 
-    const isOld =
-      new Date(reply.createdAt).getTime() < Date.now() - 7 * 86_400_000;
     for (const [recipientId, reason] of reasons) {
+      const role = roleOf.get(recipientId);
       const canView =
         recipientId === instructorId ||
         enrolledOn.has(`${recipientId}:${courseId}`);
-      if (roleOf.get(recipientId) === UserRole.Admin || !canView) continue;
+      if (role === undefined || !canReceiveNotifications(role) || !canView) {
+        continue;
+      }
       db.insert(schema.notifications)
         .values({
           recipientId,
           commentId: reply.id,
           reason,
           createdAt: reply.createdAt,
-          readAt: isOld ? reply.createdAt : null,
+          readAt: isOlderThanAWeek(reply.createdAt) ? reply.createdAt : null,
         })
         .run();
     }

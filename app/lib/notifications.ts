@@ -1,8 +1,19 @@
-import { NotificationReason } from "~/db/schema";
+import { NotificationReason, UserRole } from "~/db/schema";
 
 // ─── Notification display helpers (client-safe) ───
 // The server side (creating, listing, marking read) lives in
 // comments.server.ts.
+
+/** The roles that receive Notifications. Platform Admins never do. */
+export const NOTIFIABLE_ROLES: readonly UserRole[] = [
+  UserRole.Student,
+  UserRole.Instructor,
+];
+
+/** Whether a user with this role receives Notifications. */
+export function canReceiveNotifications(role: UserRole): boolean {
+  return NOTIFIABLE_ROLES.includes(role);
+}
 
 /** The badge text on the bell: nothing at 0, "9+" above nine. */
 export function badgeLabel(unreadCount: number): string | null {
