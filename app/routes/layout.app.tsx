@@ -17,9 +17,9 @@ import {
   teamMembers,
   TeamMemberRole,
   LessonProgressStatus,
-  UserRole,
 } from "~/db/schema";
 import { countUnread, listNotifications } from "~/lib/comments.server";
+import { canReceiveNotifications } from "~/lib/notifications";
 
 function getAllUsers() {
   return db.select().from(users).all();
@@ -218,9 +218,7 @@ export async function loader({ request }: Route.LoaderArgs) {
     // Re-run on every navigation and submission, which keeps the bell fresh.
     // Don't add shouldRevalidate to this route.
     notifications:
-      currentUser &&
-      (currentUser.role === UserRole.Student ||
-        currentUser.role === UserRole.Instructor)
+      currentUser && canReceiveNotifications(currentUser.role)
         ? {
             unreadCount: countUnread(db, currentUser.id),
             items: listNotifications(db, currentUser.id),

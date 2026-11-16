@@ -458,6 +458,15 @@ describe("markRead", () => {
   it("returns null for a Notification that doesn't exist", () => {
     expect(markRead(db, base.instructor.id, 9999)).toBeNull();
   });
+
+  it("returns null for a Notification whose target is deleted", () => {
+    const comment = postComment(db, base.user.id, lessonId, null, "Question?");
+    const [notification] = listNotifications(db, base.instructor.id);
+
+    softDelete(comment.id);
+
+    expect(markRead(db, base.instructor.id, notification.id)).toBeNull();
+  });
 });
 
 describe("markAllRead", () => {
