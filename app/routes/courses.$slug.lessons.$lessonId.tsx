@@ -35,7 +35,7 @@ import {
   getQuizByLessonId,
   getQuizWithQuestions,
   getBestAttempt,
-  computeResult,
+  submitQuizAttempt,
 } from "~/modules/lesson-viewer/quiz.server";
 import {
   getCommentById,
@@ -452,11 +452,11 @@ export async function action({ params, request }: Route.ActionArgs) {
       }
     }
 
-    const result = computeResult(currentUserId, quizId, selectedAnswers);
-    if (!result) {
-      throw data("Failed to score quiz", { status: 500 });
-    }
-
+    const result = submitQuizAttempt(db, {
+      userId: currentUserId,
+      quizId,
+      selectedAnswers,
+    });
     return { quizResult: result };
   }
 
