@@ -35,20 +35,17 @@ export function getQuizWithQuestions(database: Db, quizId: number) {
     .orderBy(quizQuestions.position)
     .all();
 
-  const options =
-    questions.length === 0
-      ? []
-      : database
-          .select()
-          .from(quizOptions)
-          .where(
-            inArray(
-              quizOptions.questionId,
-              questions.map((q) => q.id)
-            )
-          )
-          .orderBy(quizOptions.id)
-          .all();
+  const options = database
+    .select()
+    .from(quizOptions)
+    .where(
+      inArray(
+        quizOptions.questionId,
+        questions.map((q) => q.id)
+      )
+    )
+    .orderBy(quizOptions.id)
+    .all();
 
   const questionsWithOptions = questions.map((question) => ({
     ...question,
@@ -115,25 +112,22 @@ export function submitQuizAttempt(
     .orderBy(quizQuestions.position)
     .all();
 
-  const correctOptions =
-    questions.length === 0
-      ? []
-      : database
-          .select({
-            id: quizOptions.id,
-            questionId: quizOptions.questionId,
-          })
-          .from(quizOptions)
-          .where(
-            and(
-              inArray(
-                quizOptions.questionId,
-                questions.map((q) => q.id)
-              ),
-              eq(quizOptions.isCorrect, true)
-            )
-          )
-          .all();
+  const correctOptions = database
+    .select({
+      id: quizOptions.id,
+      questionId: quizOptions.questionId,
+    })
+    .from(quizOptions)
+    .where(
+      and(
+        inArray(
+          quizOptions.questionId,
+          questions.map((q) => q.id)
+        ),
+        eq(quizOptions.isCorrect, true)
+      )
+    )
+    .all();
 
   const questionResults: QuestionResult[] = questions.map((q) => {
     const selected = selectedAnswers[q.id];
