@@ -92,8 +92,6 @@ export type QuizAttemptResult = {
   questionResults: QuestionResult[];
 };
 
-// Grades the Student's answers and records the attempt. The caller has already
-// checked that the quiz exists and belongs to the lesson.
 export type QuizSubmission = {
   userId: number;
   quizId: number;
@@ -101,10 +99,39 @@ export type QuizSubmission = {
   selectedAnswers: Record<number, number>;
 };
 
+// Grades the Student's answers and records the attempt. The caller has already
+// checked that the quiz exists and belongs to the lesson.
 export function submitQuizAttempt(
   database: Db,
-  { userId, quizId, selectedAnswers }: QuizSubmission
+  submission: QuizSubmission
 ): QuizAttemptResult {
+  const questionResults = gradeAnswers(database, submission);
+  const correct = questionResults.filter((r) => r.correct).length;
+  const total = questionResults.length;
+  const score = total > 0 ? correct / total : 0;
+  const passed = score > 0.7;
+
+  const attemptId = recordAttempt(database, submission, {
+    score,
+    passed,
+    questionResults,
+  });
+
+  return {
+    attemptId,
+    score,
+    passed,
+    grade: calculateGrade(score),
+    totalCorrect: correct,
+    totalQuestions: total,
+    questionResults,
+  };
+}
+
+function gradeAnswers(
+  database: Db,
+  { quizId, selectedAnswers }: QuizSubmission
+): QuestionResult[] {
   const questions = database
     .select()
     .from(quizQuestions)
@@ -113,10 +140,7 @@ export function submitQuizAttempt(
     .all();
 
   const correctOptions = database
-    .select({
-      id: quizOptions.id,
-      questionId: quizOptions.questionId,
-    })
+    .select({ id: quizOptions.id, questionId: quizOptions.questionId })
     .from(quizOptions)
     .where(
       and(
@@ -129,7 +153,7 @@ export function submitQuizAttempt(
     )
     .all();
 
-  const questionResults: QuestionResult[] = questions.map((q) => {
+  return questions.map((q) => {
     const selected = selectedAnswers[q.id];
     if (!selected) {
       return {
@@ -148,25 +172,27 @@ export function submitQuizAttempt(
       correctOptionId,
     };
   });
+}
 
-  const correct = questionResults.filter((r) => r.correct).length;
-  const total = questions.length;
-  const scoreValue = total > 0 ? correct / total : 0;
-  const passed = scoreValue > 0.7;
-
-  const attempt = database.transaction((tx) => {
-    const inserted = tx
+// The attempt and its answers land together or not at all.
+function recordAttempt(
+  database: Db,
+  { userId, quizId }: QuizSubmission,
+  graded: Pick<QuizAttemptResult, "score" | "passed" | "questionResults">
+): number {
+  return database.transaction((tx) => {
+    const attempt = tx
       .insert(quizAttempts)
-      .values({ userId, quizId, score: scoreValue, passed })
+      .values({ userId, quizId, score: graded.score, passed: graded.passed })
       .returning()
       .get();
 
-    const answers = questionResults.flatMap((r) =>
+    const answers = graded.questionResults.flatMap((r) =>
       r.selectedOptionId === null
         ? []
         : [
             {
-              attemptId: inserted.id,
+              attemptId: attempt.id,
               questionId: r.questionId,
               selectedOptionId: r.selectedOptionId,
             },
@@ -174,16 +200,6 @@ export function submitQuizAttempt(
     );
     if (answers.length > 0) tx.insert(quizAnswers).values(answers).run();
 
-    return inserted;
+    return attempt.id;
   });
-
-  return {
-    attemptId: attempt.id,
-    score: scoreValue,
-    passed,
-    grade: calculateGrade(scoreValue),
-    totalCorrect: correct,
-    totalQuestions: total,
-    questionResults,
-  };
 }
