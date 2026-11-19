@@ -20,11 +20,15 @@ export function getQuizByLessonId(lessonId: number) {
   return db.select().from(quizzes).where(eq(quizzes.lessonId, lessonId)).get();
 }
 
-export function getQuizWithQuestions(quizId: number) {
-  const quiz = db.select().from(quizzes).where(eq(quizzes.id, quizId)).get();
+export function getQuizWithQuestions(database: Db, quizId: number) {
+  const quiz = database
+    .select()
+    .from(quizzes)
+    .where(eq(quizzes.id, quizId))
+    .get();
   if (!quiz) return null;
 
-  const questions = db
+  const questions = database
     .select()
     .from(quizQuestions)
     .where(eq(quizQuestions.quizId, quizId))
@@ -34,7 +38,7 @@ export function getQuizWithQuestions(quizId: number) {
   const options =
     questions.length === 0
       ? []
-      : db
+      : database
           .select()
           .from(quizOptions)
           .where(

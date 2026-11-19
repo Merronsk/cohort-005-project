@@ -238,7 +238,7 @@ export async function loader({ params, request }: Route.LoaderArgs) {
   let bestAttempt: { score: number; passed: boolean } | null = null;
 
   if (quizRecord) {
-    const quizData = getQuizWithQuestions(quizRecord.id);
+    const quizData = getQuizWithQuestions(db, quizRecord.id);
     if (quizData) {
       // Strip isCorrect from options so answers aren't leaked to the client
       quiz = {
