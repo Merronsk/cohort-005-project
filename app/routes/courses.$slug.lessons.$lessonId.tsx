@@ -124,7 +124,7 @@ export async function loader({ params, request }: Route.LoaderArgs) {
   const currentUserId = person?.id ?? null;
   const lessonId = Number(params.lessonId);
 
-  const courseWithDetails = getCourseWithDetails(course.id);
+  const courseWithDetails = getCourseWithDetails(db, course.id);
   const lesson = getLessonById(lessonId);
   const mod = lesson ? getModuleById(lesson.moduleId) : undefined;
   if (!courseWithDetails || !lesson || !mod) {
@@ -202,7 +202,7 @@ export async function loader({ params, request }: Route.LoaderArgs) {
   // Everything from here on is behind the can-view-content bar above:
   // comments, Bookmarks and Notes are confidential to the course.
   const instructor = getUserById(course.instructorId);
-  const comments = await renderThread(getLessonThread(lessonId));
+  const comments = await renderThread(getLessonThread(db, lessonId));
 
   const bookmarked = currentUserId
     ? isBookmarked(db, currentUserId, lessonId)

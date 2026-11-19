@@ -1,9 +1,13 @@
 import { db } from "~/db";
 import { categories, courses, lessons, modules, users } from "~/db/schema";
 import { eq, inArray } from "drizzle-orm";
+import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
+import type * as schema from "~/db/schema";
 
-export function getCourseWithDetails(id: number) {
-  const course = db
+export type Db = BetterSQLite3Database<typeof schema>;
+
+export function getCourseWithDetails(database: Db, id: number) {
+  const course = database
     .select({
       id: courses.id,
       title: courses.title,
@@ -31,18 +35,18 @@ export function getCourseWithDetails(id: number) {
 
   if (!course) return null;
 
-  return { ...course, modules: getModulesWithLessons(id) };
+  return { ...course, modules: getModulesWithLessons(database, id) };
 }
 
-function getModulesWithLessons(courseId: number) {
-  const courseModules = db
+function getModulesWithLessons(database: Db, courseId: number) {
+  const courseModules = database
     .select()
     .from(modules)
     .where(eq(modules.courseId, courseId))
     .orderBy(modules.position)
     .all();
 
-  const courseLessons = db
+  const courseLessons = database
     .select()
     .from(lessons)
     .where(
@@ -72,8 +76,8 @@ export function getUserById(id: number) {
   return db.select().from(users).where(eq(users.id, id)).get();
 }
 
-export function getCourseForLesson(lessonId: number) {
-  return db
+export function getCourseForLesson(database: Db, lessonId: number) {
+  return database
     .select({
       courseId: courses.id,
       courseTitle: courses.title,

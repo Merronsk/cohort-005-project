@@ -4,7 +4,7 @@ import { asc, eq } from "drizzle-orm";
 import { renderComment } from "~/lib/comment-markdown.server";
 import { markdown, type Markdown } from "~/lib/text";
 import type { RenderedComment } from "~/components/comment-thread";
-import { getCourseForLesson } from "./course.server";
+import { getCourseForLesson, type Db } from "./course.server";
 
 export type CommentAuthor = {
   id: number;
@@ -28,8 +28,8 @@ export function getCommentById(commentId: number) {
   return db.select().from(comments).where(eq(comments.id, commentId)).get();
 }
 
-function selectThreadRows(lessonId: number) {
-  return db
+function selectThreadRows(database: Db, lessonId: number) {
+  return database
     .select({
       id: comments.id,
       body: comments.body,
@@ -70,11 +70,14 @@ function toThreadComment(row: ThreadRow, instructorId: number): ThreadComment {
   };
 }
 
-export function getLessonThread(lessonId: number): ThreadComment[] {
-  const course = getCourseForLesson(lessonId);
+export function getLessonThread(
+  database: Db,
+  lessonId: number
+): ThreadComment[] {
+  const course = getCourseForLesson(database, lessonId);
   if (!course) return [];
 
-  const rows = selectThreadRows(lessonId);
+  const rows = selectThreadRows(database, lessonId);
   const topLevel: ThreadComment[] = [];
   const byId = new Map<number, ThreadComment>();
 
